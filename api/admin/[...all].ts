@@ -1,6 +1,6 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { VercelDb } from '../../src/db/dbStore';
-import { verifyToken } from '../authHelper';
+import { verifyJWT } from '../../src/lib/jwt';
 import jwt from 'jsonwebtoken';
 
 interface JwtPayload {
