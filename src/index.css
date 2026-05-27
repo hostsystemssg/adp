@@ -1,0 +1,42 @@
+@import url('https://fonts.cdnfonts.com/css/aptos');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Aptos", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Aptos", "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Aptos", "Space Grotesk", sans-serif;
+  
+  --color-brand-teal: #2DB39E;
+  --color-obsidian-black: #000000;
+  --color-obsidian-card: #0B0B0C;
+  --color-obsidian-panel: #161617;
+  --color-obsidian-border: #2A2A2B;
+  --color-obsidian-gray: #3A3A3A;
+  --color-offwhite: #F3F4F6;
+  --color-muted-gray: #9CA3AF;
+  --color-success-green: #22C55E;
+  --color-error-danger: #E63946;
+}
+
+/* Custom Base Scrollbars and styling tweaks */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #000000;
+}
+::-webkit-scrollbar-thumb {
+  background: #2A2A2B;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2DB39E;
+}
+
+body {
+  background-color: #000000;
+  color: #F3F4F6;
+  font-family: var(--font-sans);
+}

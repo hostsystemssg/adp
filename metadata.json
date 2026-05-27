@@ -1,0 +1,6 @@
+{
+  "name": "Point One Technology B2B Portal",
+  "description": "PDPA-compliant gated B2B procurement portal for Singapore retailers, featuring brushless-DC motor ceiling fans and LED illumination, dynamic pricing simulators, pre-order discounts, and admin-led inventory controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
