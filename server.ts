@@ -2,26 +2,14 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 
-// Import all Vercel-compatible serverless api handlers
+// Import consolidated Vercel-compatible serverless api handlers
 import healthHandler from "./api/health";
 import faqHandler from "./api/faq/index";
-import faqIdHandler from "./api/faq/[id]";
-import registerHandler from "./api/auth/register";
-import loginHandler from "./api/auth/login";
-import meHandler from "./api/auth/me";
-import myDataHandler from "./api/auth/my-data";
-import catalogIndexHandler from "./api/catalog/index";
-import catalogIdHandler from "./api/catalog/[id]";
-import ordersIndexHandler from "./api/orders/index";
-import ordersIdHandler from "./api/orders/[id]";
-import ordersPaymentHandler from "./api/orders/[id]/payment";
-import consentIndexHandler from "./api/consent/index";
-import consentPurposeHandler from "./api/consent/[purpose]";
-import adminRetailersIndexHandler from "./api/admin/retailers/index";
-import adminRetailersIdHandler from "./api/admin/retailers/[id]";
-import adminOrdersIndexHandler from "./api/admin/orders/index";
-import adminOrdersIdHandler from "./api/admin/orders/[id]";
-import adminAnonymizeHandler from "./api/admin/anonymize";
+import authHandler from "./api/auth/index";
+import catalogHandler from "./api/catalog/index";
+import ordersHandler from "./api/orders/index";
+import consentHandler from "./api/consent/index";
+import adminHandler from "./api/admin/index";
 
 async function startServer() {
   const app = express();
@@ -44,44 +32,111 @@ async function startServer() {
     };
   };
 
-  // Register API Dispatch Lines
+  // Register API Dispatch Routes - Consolidated handlers
   app.all("/api/health", routeParamConverter(healthHandler));
   
-  // FAQs
-  app.get("/api/faq", routeParamConverter(faqHandler));
-  app.post("/api/faq", routeParamConverter(faqHandler));
-  app.delete("/api/faq/:id", routeParamConverter(faqIdHandler));
+  // FAQs - GET all, POST create/update, DELETE by id
+  app.get("/api/faq", (req: any, res: any) => {
+    req.query = { ...req.query, ...req.params };
+    faqHandler(req, res);
+  });
+  app.post("/api/faq", (req: any, res: any) => {
+    req.query = { ...req.query, ...req.params };
+    faqHandler(req, res);
+  });
+  app.delete("/api/faq/:id", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id };
+    faqHandler(req, res);
+  });
 
-  // Authentication & Registrations
-  app.post("/api/auth/register", routeParamConverter(registerHandler));
-  app.post("/api/auth/login", routeParamConverter(loginHandler));
-  app.get("/api/auth/me", routeParamConverter(meHandler));
-  
-  // Custom compliance features
-  app.get("/api/auth/my-data", routeParamConverter(myDataHandler));
-  app.get("/api/consent", routeParamConverter(consentIndexHandler));
-  app.patch("/api/consent/:purpose", routeParamConverter(consentPurposeHandler));
+  // Authentication - login, register, me, my-data
+  app.post("/api/auth/login", (req: any, res: any) => {
+    req.query = { ...req.query, action: "login" };
+    authHandler(req, res);
+  });
+  app.post("/api/auth/register", (req: any, res: any) => {
+    req.query = { ...req.query, action: "register" };
+    authHandler(req, res);
+  });
+  app.get("/api/auth/me", (req: any, res: any) => {
+    req.query = { ...req.query, action: "me" };
+    authHandler(req, res);
+  });
+  app.get("/api/auth/my-data", (req: any, res: any) => {
+    req.query = { ...req.query, action: "my-data" };
+    authHandler(req, res);
+  });
 
-  // Catalog item specs
-  app.get("/api/catalog", routeParamConverter(catalogIndexHandler));
-  app.post("/api/catalog", routeParamConverter(catalogIndexHandler));
-  app.get("/api/catalog/:id", routeParamConverter(catalogIdHandler));
-  app.put("/api/catalog/:id", routeParamConverter(catalogIdHandler));
-  app.delete("/api/catalog/:id", routeParamConverter(catalogIdHandler));
+  // Consent management
+  app.get("/api/consent", (req: any, res: any) => {
+    req.query = { ...req.query };
+    consentHandler(req, res);
+  });
+  app.patch("/api/consent/:purpose", (req: any, res: any) => {
+    req.query = { ...req.query, purpose: req.params.purpose };
+    consentHandler(req, res);
+  });
 
-  // Regular distributor orders
-  app.get("/api/orders", routeParamConverter(ordersIndexHandler));
-  app.post("/api/orders", routeParamConverter(ordersIndexHandler));
-  app.get("/api/orders/:id", routeParamConverter(ordersIdHandler));
-  app.post("/api/orders/:id/payment", routeParamConverter(ordersPaymentHandler));
+  // Catalog - GET all, POST create, GET/PUT/DELETE by id
+  app.get("/api/catalog", (req: any, res: any) => {
+    catalogHandler(req, res);
+  });
+  app.post("/api/catalog", (req: any, res: any) => {
+    catalogHandler(req, res);
+  });
+  app.get("/api/catalog/:id", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id };
+    catalogHandler(req, res);
+  });
+  app.put("/api/catalog/:id", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id };
+    catalogHandler(req, res);
+  });
+  app.delete("/api/catalog/:id", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id };
+    catalogHandler(req, res);
+  });
 
-  // Admin Controls (applications verification and orders override lines)
-  app.get("/api/admin/retailers", routeParamConverter(adminRetailersIndexHandler));
-  app.patch("/api/admin/retailers/:id", routeParamConverter(adminRetailersIdHandler));
-  app.post("/api/admin/orders", routeParamConverter(adminOrdersIndexHandler));
-  app.patch("/api/admin/orders/:id", routeParamConverter(adminOrdersIdHandler));
-  app.get("/api/admin/anonymize", routeParamConverter(adminAnonymizeHandler));
-  app.post("/api/admin/anonymize", routeParamConverter(adminAnonymizeHandler));
+  // Orders - GET all, POST create, GET by id, POST payment
+  app.get("/api/orders", (req: any, res: any) => {
+    ordersHandler(req, res);
+  });
+  app.post("/api/orders", (req: any, res: any) => {
+    ordersHandler(req, res);
+  });
+  app.get("/api/orders/:id", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id };
+    ordersHandler(req, res);
+  });
+  app.post("/api/orders/:id/payment", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id, action: "payment" };
+    ordersHandler(req, res);
+  });
+
+  // Admin routes - retailers, orders, anonymize
+  app.get("/api/admin/retailers", (req: any, res: any) => {
+    adminHandler(req, res);
+  });
+  app.patch("/api/admin/retailers/:id", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id };
+    adminHandler(req, res);
+  });
+  app.post("/api/admin/orders", (req: any, res: any) => {
+    req.query = { ...req.query, action: "orders" };
+    adminHandler(req, res);
+  });
+  app.patch("/api/admin/orders/:id", (req: any, res: any) => {
+    req.query = { ...req.query, id: req.params.id, action: "orders" };
+    adminHandler(req, res);
+  });
+  app.get("/api/admin/anonymize", (req: any, res: any) => {
+    req.query = { ...req.query, action: "anonymize" };
+    adminHandler(req, res);
+  });
+  app.post("/api/admin/anonymize", (req: any, res: any) => {
+    req.query = { ...req.query, action: "anonymize" };
+    adminHandler(req, res);
+  });
 
   // Serve static assets or mount Vite dev server middleware
   if (process.env.NODE_ENV !== "production") {
