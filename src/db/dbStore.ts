@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import bcrypt from "bcryptjs";
+import { sql } from "@vercel/postgres";
 
 // Define the absolute path for DB storage inside AI Studio project workspace
 const DB_FILE_PATH = path.join(process.cwd(), "db.json");
@@ -37,8 +38,8 @@ export interface Product {
   name: string;
   category: "Ceiling Fan" | "LED Downlight";
   description: string;
-  basePrice: number;       // Retail Price SGD
-  wholesalePrice: number;  // Distributor Base Price SGD
+  basePrice: number;       // Retail SGD
+  wholesalePrice: number;  // Distributor Base SGD
   moq: number;
   technicalSpecs: {
     rpmRange?: string;
@@ -76,7 +77,7 @@ export interface Order {
   subtotal: number;
   discountAmount: number;
   totalAmount: number;
-  receiptUrl: string | null; // invoice or payment bank receipt screenshot base64
+  receiptUrl: string | null;
   createdAt: string;
   updatedAt: string;
   items: OrderItem[];
@@ -118,7 +119,7 @@ export interface LocalDatabase {
   faqs: FAQItem[];
 }
 
-const INITIAL_FAQS: FAQItem[] = [
+export const INITIAL_FAQS: FAQItem[] = [
   {
     id: "faq-1",
     q: "How does the B2B distributor qualification process work?",
@@ -151,7 +152,7 @@ const INITIAL_FAQS: FAQItem[] = [
   }
 ];
 
-const INITIAL_PRODUCTS: Product[] = [
+export const INITIAL_PRODUCTS: Product[] = [
   {
     id: "p1",
     sku: "PO-AERO-52-BLK-BLDC",
@@ -237,12 +238,12 @@ const INITIAL_PRODUCTS: Product[] = [
     imageUrl: "https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&q=80&w=600",
     stockCount: 0,
     isPreOrder: true,
-    preOrderDiscount: 15, // 15% pre-order markdown
+    preOrderDiscount: 15,
     createdAt: "2026-05-10T00:00:00Z"
   }
 ];
 
-const INITIAL_SETTINGS: SystemSetting[] = [
+export const INITIAL_SETTINGS: SystemSetting[] = [
   {
     id: "preorder_campaign",
     campaignName: "Pre-Order Ventilation Drive Q2/Q3",
@@ -253,15 +254,14 @@ const INITIAL_SETTINGS: SystemSetting[] = [
   }
 ];
 
-// Helper to check and load/save DB state dynamically and atomic
+// Helper database loaders/saves for FILE STORAGE (Legacy fallback)
 export class DB {
-  private static load(): LocalDatabase {
+  public static load(): LocalDatabase {
     if (!fs.existsSync(DB_FILE_PATH)) {
       const salt = bcrypt.genSaltSync(12);
       const passwordHash = bcrypt.hashSync("hostsystems2018!", salt);
       const initialDb: LocalDatabase = {
         users: [
-          // Pre-populate admin user for logging in easily
           {
             id: "admin-user-id",
             email: "andrew.lim@hostsystems.sg",
@@ -291,13 +291,11 @@ export class DB {
       
       let changed = false;
 
-      // Ensure faqs list is present and initialized
       if (!db.faqs) {
         db.faqs = INITIAL_FAQS;
         changed = true;
       }
 
-      // Migration: Remove old admin and add the new one on-the-fly
       const oldIndex = db.users.findIndex(u => u.email.toLowerCase() === "admin@pointone.sg");
       if (oldIndex >= 0) {
         db.users.splice(oldIndex, 1);
@@ -328,7 +326,6 @@ export class DB {
       
       return db;
     } catch {
-      // In case of corrupt files
       return {
         users: [],
         retailers: [],
@@ -341,7 +338,7 @@ export class DB {
     }
   }
 
-  private static save(db: LocalDatabase) {
+  public static save(db: LocalDatabase) {
     fs.writeFileSync(DB_FILE_PATH, JSON.stringify(db, null, 2), "utf-8");
   }
 
@@ -471,16 +468,501 @@ export class DB {
   static getSystemSettings(): SystemSetting[] {
     return this.load().systemSettings;
   }
+}
 
-  static saveSystemSetting(setting: SystemSetting): SystemSetting {
-    const db = this.load();
-    const idx = db.systemSettings.findIndex(s => s.id === setting.id);
-    if (idx >= 0) {
-      db.systemSettings[idx] = setting;
-    } else {
-      db.systemSettings.push(setting);
-    }
-    this.save(db);
-    return setting;
+// Map helper functions for PostgreSQL conversions
+function mapRowToUser(r: any): User {
+  return {
+    id: r.id,
+    email: r.email,
+    passwordHash: r.password_hash,
+    fullName: r.full_name,
+    phone: r.phone,
+    role: r.role as any,
+    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+    updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at,
+    isAnonymized: Boolean(r.is_anonymized)
+  };
+}
+
+function mapRowToRetailer(r: any): Retailer {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    companyName: r.company_name,
+    uen: r.uen,
+    address: r.address,
+    postalCode: r.postal_code,
+    showroomLocations: r.showroom_locations,
+    tier: r.tier as any,
+    status: r.status as any,
+    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+    updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at
+  };
+}
+
+function mapRowToProduct(r: any): Product {
+  return {
+    id: r.id,
+    sku: r.sku,
+    name: r.name,
+    category: r.category as any,
+    description: r.description,
+    basePrice: Number(r.base_price),
+    wholesalePrice: Number(r.wholesale_price),
+    moq: Number(r.moq),
+    technicalSpecs: typeof r.technical_specs === 'string' ? JSON.parse(r.technical_specs) : r.technical_specs,
+    specSheetUrl: r.spec_sheet_url || "",
+    imageUrl: r.image_url || "",
+    stockCount: Number(r.stock_count || 0),
+    isPreOrder: Boolean(r.is_pre_order),
+    preOrderDiscount: Number(r.pre_order_discount || 0),
+    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at
+  };
+}
+
+function mapRowToFaq(r: any): FAQItem {
+  return {
+    id: r.id,
+    q: r.question,
+    a: r.answer,
+    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at
+  };
+}
+
+function mapRowToConsent(r: any): ConsentRecord {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    purpose: r.purpose as any,
+    givenAt: r.given_at instanceof Date ? r.given_at.toISOString() : r.given_at,
+    withdrawnAt: r.withdrawn_at ? (r.withdrawn_at instanceof Date ? r.withdrawn_at.toISOString() : r.withdrawn_at) : null,
+    ipAddress: r.ip_address,
+    userAgent: r.user_agent
+  };
+}
+
+// MODERN ASYNCHRONOUS DATABASE LAYER (Capable of Vercel Postgres or local fallback list)
+export class VercelDb {
+  private static isPostgres(): boolean {
+    return !!process.env.POSTGRES_URL;
   }
+
+  public static async ensureTables() {
+    if (!this.isPostgres()) {
+      // Local fallback initializes sync file if absent
+      DB.load();
+      return;
+    }
+
+    try {
+      // Ensure all standard tables exist
+      await sql`
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          email TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          full_name TEXT NOT NULL,
+          phone TEXT NOT NULL,
+          role TEXT CHECK (role IN ('retailer', 'admin')) NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW(),
+          is_anonymized BOOLEAN DEFAULT FALSE
+        );
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS retailers (
+          id TEXT PRIMARY KEY,
+          user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          company_name TEXT NOT NULL,
+          uen TEXT UNIQUE NOT NULL,
+          address TEXT NOT NULL,
+          postal_code TEXT NOT NULL,
+          showroom_locations TEXT NOT NULL,
+          tier TEXT CHECK (tier IN ('Standard', 'Silver', 'Gold', 'Platinum')) DEFAULT 'Standard',
+          status TEXT CHECK (status IN ('Pending', 'Approved', 'Declined')) DEFAULT 'Pending',
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS products (
+          id TEXT PRIMARY KEY,
+          sku TEXT UNIQUE NOT NULL,
+          name TEXT NOT NULL,
+          category TEXT CHECK (category IN ('Ceiling Fan', 'LED Downlight')) NOT NULL,
+          description TEXT NOT NULL,
+          base_price DECIMAL(10,2) NOT NULL,
+          wholesale_price DECIMAL(10,2) NOT NULL,
+          moq INTEGER NOT NULL,
+          technical_specs JSONB NOT NULL,
+          spec_sheet_url TEXT,
+          image_url TEXT,
+          stock_count INTEGER DEFAULT 0,
+          is_pre_order BOOLEAN DEFAULT FALSE,
+          pre_order_discount INTEGER DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS orders (
+          id TEXT PRIMARY KEY,
+          retailer_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          procurement_ref TEXT NOT NULL,
+          status TEXT CHECK (status IN ('Pending Payment Proof', 'Payment Verified', 'Processing', 'Dispatched')) NOT NULL,
+          total_qty INTEGER NOT NULL,
+          subtotal DECIMAL(10,2) NOT NULL,
+          discount_amount DECIMAL(10,2) NOT NULL,
+          total_amount DECIMAL(10,2) NOT NULL,
+          receipt_url TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS order_items (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          product_id TEXT NOT NULL,
+          qty INTEGER NOT NULL,
+          unit_price DECIMAL(10,2) NOT NULL,
+          total_price DECIMAL(10,2) NOT NULL,
+          discount_applied INTEGER DEFAULT 0
+        );
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS consent_records (
+          id TEXT PRIMARY KEY,
+          user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          purpose TEXT CHECK (purpose IN ('registration', 'marketing', 'analytics')) NOT NULL,
+          given_at TIMESTAMPTZ DEFAULT NOW(),
+          withdrawn_at TIMESTAMPTZ,
+          ip_address TEXT NOT NULL,
+          user_agent TEXT NOT NULL
+        );
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS faqs (
+          id TEXT PRIMARY KEY,
+          question TEXT NOT NULL,
+          answer TEXT NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `;
+
+      // Seed Default User (Admin)
+      const usersQuery = await sql`SELECT COUNT(*)::INTEGER as count FROM users`;
+      if (Number(usersQuery.rows[0].count) === 0) {
+        const salt = await bcrypt.genSalt(12);
+        const hashed = await bcrypt.hash("hostsystems2018!", salt);
+        await sql`
+          INSERT INTO users (id, email, password_hash, full_name, phone, role, created_at, updated_at, is_anonymized)
+          VALUES ('admin-user-id', 'andrew.lim@hostsystems.sg', ${hashed}, 'Andrew Lim (Master Admin)', '+65 6717 6511', 'admin', NOW(), NOW(), FALSE)
+        `;
+      }
+
+      // Seed Products if empty
+      const productsQuery = await sql`SELECT COUNT(*)::INTEGER as count FROM products`;
+      if (Number(productsQuery.rows[0].count) === 0) {
+        for (const p of INITIAL_PRODUCTS) {
+          const specsStr = JSON.stringify(p.technicalSpecs);
+          await sql`
+            INSERT INTO products (id, sku, name, category, description, base_price, wholesale_price, moq, technical_specs, spec_sheet_url, image_url, stock_count, is_pre_order, pre_order_discount, created_at)
+            VALUES (${p.id}, ${p.sku}, ${p.name}, ${p.category}, ${p.description}, ${p.basePrice}, ${p.wholesalePrice}, ${p.moq}, ${specsStr}, ${p.specSheetUrl}, ${p.imageUrl}, ${p.stockCount}, ${p.isPreOrder}, ${p.preOrderDiscount}, NOW())
+          `;
+        }
+      }
+
+      // Seed FAQs if empty
+      const faqsQuery = await sql`SELECT COUNT(*)::INTEGER as count FROM faqs`;
+      if (Number(faqsQuery.rows[0].count) === 0) {
+        for (const f of INITIAL_FAQS) {
+          await sql`
+            INSERT INTO faqs (id, question, answer, created_at)
+            VALUES (${f.id}, ${f.q}, ${f.a}, NOW())
+          `;
+        }
+      }
+    } catch (err) {
+      console.error("Database connection initialization failed:", err);
+    }
+  }
+
+  // FAQ Operations
+  static async getFaqs(): Promise<FAQItem[]> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.getFaqs();
+    }
+    const { rows } = await sql`SELECT * FROM faqs ORDER BY created_at ASC`;
+    return rows.map(mapRowToFaq);
+  }
+
+  static async saveFaq(faq: FAQItem): Promise<FAQItem> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.saveFaq(faq);
+    }
+    const existing = await sql`SELECT id FROM faqs WHERE id = ${faq.id}`;
+    if (existing.rows.length > 0) {
+      await sql`
+        UPDATE faqs
+        SET question = ${faq.q}, answer = ${faq.a}
+        WHERE id = ${faq.id}
+      `;
+    } else {
+      await sql`
+        INSERT INTO faqs (id, question, answer, created_at)
+        VALUES (${faq.id}, ${faq.q}, ${faq.a}, NOW())
+      `;
+    }
+    return faq;
+  }
+
+  static async deleteFaq(faqId: string): Promise<boolean> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.deleteFaq(faqId);
+    }
+    const result = await sql`DELETE FROM faqs WHERE id = ${faqId}`;
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  // User Operations
+  static async getUsers(): Promise<User[]> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.getUsers();
+    }
+    const { rows } = await sql`SELECT * FROM users`;
+    return rows.map(mapRowToUser);
+  }
+
+  static async saveUser(user: User): Promise<User> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.saveUser(user);
+    }
+    const existing = await sql`SELECT id FROM users WHERE id = ${user.id}`;
+    if (existing.rows.length > 0) {
+      await sql`
+        UPDATE users
+        SET email = ${user.email}, password_hash = ${user.passwordHash}, full_name = ${user.fullName}, 
+            phone = ${user.phone}, role = ${user.role}, updated_at = NOW(), is_anonymized = ${user.isAnonymized}
+        WHERE id = ${user.id}
+      `;
+    } else {
+      await sql`
+        INSERT INTO users (id, email, password_hash, full_name, phone, role, created_at, updated_at, is_anonymized)
+        VALUES (${user.id}, ${user.email}, ${user.passwordHash}, ${user.fullName}, ${user.phone}, ${user.role}, NOW(), NOW(), ${user.isAnonymized})
+      `;
+    }
+    return user;
+  }
+
+  // Retailer Operations
+  static async getRetailers(): Promise<Retailer[]> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.getRetailers();
+    }
+    const { rows } = await sql`SELECT * FROM retailers`;
+    return rows.map(mapRowToRetailer);
+  }
+
+  static async findRetailerByUserId(userId: string): Promise<Retailer | undefined> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.findRetailerByUserId(userId);
+    }
+    const { rows } = await sql`SELECT * FROM retailers WHERE user_id = ${userId} LIMIT 1`;
+    if (rows.length === 0) return undefined;
+    return mapRowToRetailer(rows[0]);
+  }
+
+  static async saveRetailer(r: Retailer): Promise<Retailer> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.saveRetailer(r);
+    }
+    const existing = await sql`SELECT id FROM retailers WHERE id = ${r.id}`;
+    if (existing.rows.length > 0) {
+      await sql`
+        UPDATE retailers
+        SET user_id = ${r.userId}, company_name = ${r.companyName}, uen = ${r.uen}, address = ${r.address}, 
+            postal_code = ${r.postalCode}, showroom_locations = ${r.showroomLocations}, tier = ${r.tier}, 
+            status = ${r.status}, updated_at = NOW()
+        WHERE id = ${r.id}
+      `;
+    } else {
+      await sql`
+        INSERT INTO retailers (id, user_id, company_name, uen, address, postal_code, showroom_locations, tier, status, created_at, updated_at)
+        VALUES (${r.id}, ${r.userId}, ${r.companyName}, ${r.uen}, ${r.address}, ${r.postalCode}, ${r.showroomLocations}, ${r.tier}, ${r.status}, NOW(), NOW())
+      `;
+    }
+    return r;
+  }
+
+  // Product Operations
+  static async getProducts(): Promise<Product[]> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.getProducts();
+    }
+    const { rows } = await sql`SELECT * FROM products ORDER BY created_at DESC`;
+    return rows.map(mapRowToProduct);
+  }
+
+  static async saveProduct(p: Product): Promise<Product> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.saveProduct(p);
+    }
+    const existing = await sql`SELECT id FROM products WHERE id = ${p.id}`;
+    const specsStr = JSON.stringify(p.technicalSpecs);
+    if (existing.rows.length > 0) {
+      await sql`
+        UPDATE products
+        SET sku = ${p.sku}, name = ${p.name}, category = ${p.category}, description = ${p.description}, 
+            base_price = ${p.basePrice}, wholesale_price = ${p.wholesalePrice}, moq = ${p.moq}, 
+            technical_specs = ${specsStr}, spec_sheet_url = ${p.specSheetUrl}, image_url = ${p.imageUrl}, 
+            stock_count = ${p.stockCount}, is_pre_order = ${p.isPreOrder}, pre_order_discount = ${p.preOrderDiscount}
+        WHERE id = ${p.id}
+      `;
+    } else {
+      await sql`
+        INSERT INTO products (id, sku, name, category, description, base_price, wholesale_price, moq, technical_specs, spec_sheet_url, image_url, stock_count, is_pre_order, pre_order_discount, created_at)
+        VALUES (${p.id}, ${p.sku}, ${p.name}, ${p.category}, ${p.description}, ${p.basePrice}, ${p.wholesalePrice}, ${p.moq}, ${specsStr}, ${p.specSheetUrl}, ${p.imageUrl}, ${p.stockCount}, ${p.isPreOrder}, ${p.preOrderDiscount}, NOW())
+      `;
+    }
+    return p;
+  }
+
+  static async deleteProduct(productId: string): Promise<boolean> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.deleteProduct(productId);
+    }
+    const result = await sql`DELETE FROM products WHERE id = ${productId}`;
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  // Orders Operations
+  static async getOrders(): Promise<Order[]> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.getOrders();
+    }
+    const ordersRes = await sql`SELECT * FROM orders ORDER BY created_at DESC`;
+    const itemsRes = await sql`SELECT * FROM order_items`;
+    return mapRowsToOrders(ordersRes.rows, itemsRes.rows);
+  }
+
+  static async saveOrder(o: Order): Promise<Order> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.saveOrder(o);
+    }
+
+    const existing = await sql`SELECT id FROM orders WHERE id = ${o.id}`;
+    if (existing.rows.length > 0) {
+      await sql`
+        UPDATE orders
+        SET status = ${o.status}, receipt_url = ${o.receiptUrl}, updated_at = NOW()
+        WHERE id = ${o.id}
+      `;
+    } else {
+      await sql`
+        INSERT INTO orders (id, retailer_id, user_id, procurement_ref, status, total_qty, subtotal, discount_amount, total_amount, receipt_url, created_at, updated_at)
+        VALUES (${o.id}, ${o.retailerId}, ${o.userId}, ${o.procurementRef}, ${o.status}, ${o.totalQty}, ${o.subtotal}, ${o.discountAmount}, ${o.totalAmount}, ${o.receiptUrl}, NOW(), NOW())
+      `;
+    }
+
+    // Save and link internal order items
+    if (o.items && o.items.length > 0) {
+      await sql`DELETE FROM order_items WHERE order_id = ${o.id}`;
+      for (const item of o.items) {
+        await sql`
+          INSERT INTO order_items (id, order_id, product_id, qty, unit_price, total_price, discount_applied)
+          VALUES (${item.id}, ${o.id}, ${item.productId}, ${item.qty}, ${item.unitPrice}, ${item.totalPrice}, ${item.discountApplied})
+        `;
+      }
+    }
+
+    return o;
+  }
+
+  // Consent Records Operations
+  static async getConsentRecords(): Promise<ConsentRecord[]> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.getConsentRecords();
+    }
+    const { rows } = await sql`SELECT * FROM consent_records ORDER BY given_at DESC`;
+    return rows.map(mapRowToConsent);
+  }
+
+  static async saveConsentRecord(record: ConsentRecord): Promise<ConsentRecord> {
+    await this.ensureTables();
+    if (!this.isPostgres()) {
+      return DB.saveConsentRecord(record);
+    }
+    const existing = await sql`SELECT id FROM consent_records WHERE id = ${record.id}`;
+    if (existing.rows.length > 0) {
+      await sql`
+        UPDATE consent_records
+        SET withdrawn_at = ${record.withdrawnAt}
+        WHERE id = ${record.id}
+      `;
+    } else {
+      await sql`
+        INSERT INTO consent_records (id, user_id, purpose, given_at, withdrawn_at, ip_address, user_agent)
+        VALUES (${record.id}, ${record.userId}, ${record.purpose}, NOW(), ${record.withdrawnAt}, ${record.ipAddress}, ${record.userAgent})
+      `;
+    }
+    return record;
+  }
+}
+
+// Map PostgreSQL rows helper
+async function mapRowsToOrders(orderRows: any[], itemRows: any[]): Promise<Order[]> {
+  const itemsMap: Record<string, OrderItem[]> = {};
+  itemRows.forEach(row => {
+    const item: OrderItem = {
+      id: row.id,
+      orderId: row.order_id,
+      productId: row.product_id,
+      qty: Number(row.qty),
+      unitPrice: Number(row.unit_price),
+      totalPrice: Number(row.total_price),
+      discountApplied: Number(row.discount_applied || 0)
+    };
+    if (!itemsMap[item.orderId]) {
+      itemsMap[item.orderId] = [];
+    }
+    itemsMap[item.orderId].push(item);
+  });
+
+  return orderRows.map(row => ({
+    id: row.id,
+    retailerId: row.retailer_id,
+    userId: row.user_id,
+    procurementRef: row.procurement_ref,
+    status: row.status as any,
+    totalQty: Number(row.total_qty),
+    subtotal: Number(row.subtotal),
+    discountAmount: Number(row.discount_amount),
+    totalAmount: Number(row.total_amount),
+    receiptUrl: row.receipt_url,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
+    items: itemsMap[row.id] || []
+  }));
 }
