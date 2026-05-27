@@ -4,24 +4,24 @@ import { createServer as createViteServer } from "vite";
 
 // Import all Vercel-compatible serverless api handlers
 import healthHandler from "./api/health";
-import faqHandler from "./api/faq/index";
-import faqIdHandler from "./api/faq/[id]";
-import registerHandler from "./api/auth/register";
-import loginHandler from "./api/auth/login";
-import meHandler from "./api/auth/me";
-import myDataHandler from "./api/auth/my-data";
-import catalogIndexHandler from "./api/catalog/index";
-import catalogIdHandler from "./api/catalog/[id]";
-import ordersIndexHandler from "./api/orders/index";
-import ordersIdHandler from "./api/orders/[id]";
-import ordersPaymentHandler from "./api/orders/[id]/payment";
-import consentIndexHandler from "./api/consent/index";
-import consentPurposeHandler from "./api/consent/[purpose]";
-import adminRetailersIndexHandler from "./api/admin/retailers/index";
-import adminRetailersIdHandler from "./api/admin/retailers/[id]";
-import adminOrdersIndexHandler from "./api/admin/orders/index";
-import adminOrdersIdHandler from "./api/admin/orders/[id]";
-import adminAnonymizeHandler from "./api/admin/anonymize";
+
+// FAQ - consolidated route
+import faqAllHandler from "./api/faq/[...all]";
+
+// Auth - consolidated route (imports logic from helper files)
+import authAllHandler from "./api/auth/[...all]";
+
+// Catalog - consolidated route
+import catalogAllHandler from "./api/catalog/[...all]";
+
+// Orders - consolidated route
+import ordersAllHandler from "./api/orders/[...all]";
+
+// Consent - consolidated route
+import consentAllHandler from "./api/consent/[...all]";
+
+// Admin - consolidated route
+import adminAllHandler from "./api/admin/[...all]";
 
 async function startServer() {
   const app = express();
@@ -47,41 +47,35 @@ async function startServer() {
   // Register API Dispatch Lines
   app.all("/api/health", routeParamConverter(healthHandler));
   
-  // FAQs
-  app.get("/api/faq", routeParamConverter(faqHandler));
-  app.post("/api/faq", routeParamConverter(faqHandler));
-  app.delete("/api/faq/:id", routeParamConverter(faqIdHandler));
+  // FAQs - consolidated
+  app.all("/api/faq", routeParamConverter(faqAllHandler));
+  app.all("/api/faq/:id", routeParamConverter(faqAllHandler));
 
-  // Authentication & Registrations
-  app.post("/api/auth/register", routeParamConverter(registerHandler));
-  app.post("/api/auth/login", routeParamConverter(loginHandler));
-  app.get("/api/auth/me", routeParamConverter(meHandler));
+  // Authentication & Registrations - consolidated
+  app.all("/api/auth/register", routeParamConverter(authAllHandler));
+  app.all("/api/auth/login", routeParamConverter(authAllHandler));
+  app.all("/api/auth/me", routeParamConverter(authAllHandler));
+  app.all("/api/auth/my-data", routeParamConverter(authAllHandler));
   
-  // Custom compliance features
-  app.get("/api/auth/my-data", routeParamConverter(myDataHandler));
-  app.get("/api/consent", routeParamConverter(consentIndexHandler));
-  app.patch("/api/consent/:purpose", routeParamConverter(consentPurposeHandler));
+  // Custom compliance features - consolidated
+  app.all("/api/consent", routeParamConverter(consentAllHandler));
+  app.all("/api/consent/:purpose", routeParamConverter(consentAllHandler));
 
-  // Catalog item specs
-  app.get("/api/catalog", routeParamConverter(catalogIndexHandler));
-  app.post("/api/catalog", routeParamConverter(catalogIndexHandler));
-  app.get("/api/catalog/:id", routeParamConverter(catalogIdHandler));
-  app.put("/api/catalog/:id", routeParamConverter(catalogIdHandler));
-  app.delete("/api/catalog/:id", routeParamConverter(catalogIdHandler));
+  // Catalog item specs - consolidated
+  app.all("/api/catalog", routeParamConverter(catalogAllHandler));
+  app.all("/api/catalog/:id", routeParamConverter(catalogAllHandler));
 
-  // Regular distributor orders
-  app.get("/api/orders", routeParamConverter(ordersIndexHandler));
-  app.post("/api/orders", routeParamConverter(ordersIndexHandler));
-  app.get("/api/orders/:id", routeParamConverter(ordersIdHandler));
-  app.post("/api/orders/:id/payment", routeParamConverter(ordersPaymentHandler));
+  // Regular distributor orders - consolidated
+  app.all("/api/orders", routeParamConverter(ordersAllHandler));
+  app.all("/api/orders/:id", routeParamConverter(ordersAllHandler));
+  app.all("/api/orders/:id/payment", routeParamConverter(ordersAllHandler));
 
-  // Admin Controls (applications verification and orders override lines)
-  app.get("/api/admin/retailers", routeParamConverter(adminRetailersIndexHandler));
-  app.patch("/api/admin/retailers/:id", routeParamConverter(adminRetailersIdHandler));
-  app.post("/api/admin/orders", routeParamConverter(adminOrdersIndexHandler));
-  app.patch("/api/admin/orders/:id", routeParamConverter(adminOrdersIdHandler));
-  app.get("/api/admin/anonymize", routeParamConverter(adminAnonymizeHandler));
-  app.post("/api/admin/anonymize", routeParamConverter(adminAnonymizeHandler));
+  // Admin Controls (applications verification and orders override lines) - consolidated
+  app.all("/api/admin/retailers", routeParamConverter(adminAllHandler));
+  app.all("/api/admin/retailers/:id", routeParamConverter(adminAllHandler));
+  app.all("/api/admin/orders", routeParamConverter(adminAllHandler));
+  app.all("/api/admin/orders/:id", routeParamConverter(adminAllHandler));
+  app.all("/api/admin/anonymize", routeParamConverter(adminAllHandler));
 
   // Serve static assets or mount Vite dev server middleware
   if (process.env.NODE_ENV !== "production") {
