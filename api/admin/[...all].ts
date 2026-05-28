@@ -1,15 +1,13 @@
-import { VercelRequest, VercelResponse } from '@vercel/node';
-import { VercelDb } from '../../src/db/dbStore';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { verifyJWT } from '../../src/lib/jwt';
-import jwt from 'jsonwebtoken';
+import { VercelDb } from '../../src/db/dbStore';
+import { z } from 'zod';
 
-interface JwtPayload {
-  userId: string;
-  role: string;
-}
+// Initialize DB tables on cold start
+VercelDb.ensureTables().catch(console.error);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS headers
+  // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -19,134 +17,87 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Verify admin authentication
+    // Extract path segments (e.g., /api/admin/retailers/123 -> ['retailers', '123'])
+    // Vercel strips /api/admin/ from the path before hitting this file
+    const pathSegments = (req.url || '').replace(/^\/api\/admin\//, '').split('/').filter(Boolean);
+    const resource = pathSegments[0];
+    const id = pathSegments[1];
+
+    // Admin Auth Check (except for health checks if needed)
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return res.status(401).json({ error: 'Unauthorized: Missing token' });
     }
-
+    
     const token = authHeader.split(' ')[1];
-    const decoded = verifyToken(token) as JwtPayload;
-    
-    if (!decoded || decoded.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+    let user;
+    try {
+      user = await verifyJWT(token);
+    } catch (e) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid token' });
     }
 
-    // Parse the path to determine which admin operation
-    const pathParts = (req.query.all as string[]) || [];
-    
-    // Handle /api/admin/anonymize
-    if (pathParts[0] === 'anonymize') {
-      if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method not allowed' });
+    if (user.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: Admin access required' });
+    }
+
+    // Route Logic
+    if (req.method === 'GET') {
+      if (!resource) {
+        return res.status(400).json({ error: 'Resource required' });
       }
       
-      const users = await VercelDb.getUsers();
-      const twoYearsAgo = new Date();
-      twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
-
-      let updated = 0;
-      for (const user of users) {
-        if (user.role === 'retailer' && !user.isAnonymized) {
-          const createdAt = new Date(user.createdAt);
-          if (createdAt < twoYearsAgo) {
-            user.fullName = '[REDACTED]';
-            user.phone = '[REDACTED]';
-            user.email = `redacted-${user.id}@anonymous.local`;
-            user.isAnonymized = true;
-            user.updatedAt = new Date().toISOString();
-            await VercelDb.saveUser(user);
-            updated++;
-          }
+      if (resource === 'retailers') {
+        if (id) {
+          // Get specific retailer logic would go here if needed via DB directly
+          // For now, fetch all and filter (simplified for demo)
+          const retailers = await VercelDb.getRetailers();
+          const retailer = retailers.find(r => r.id === id);
+          if (!retailer) return res.status(404).json({ error: 'Retailer not found' });
+          return res.status(200).json(retailer);
+        } else {
+          const retailers = await VercelDb.getRetailers();
+          return res.status(200).json(retailers);
         }
       }
+      
+      if (resource === 'orders') {
+         // Fetch orders logic
+         const allOrders = await VercelDb.getOrders();
+         if (id) {
+            const order = allOrders.find(o => o.id === id);
+            if (!order) return res.status(404).json({ error: 'Order not found' });
+            return res.status(200).json(order);
+         }
+         return res.status(200).json(allOrders);
+      }
 
-      return res.status(200).json({ 
-        message: `Successfully anonymized ${updated} dormant retailer accounts`,
-        count: updated 
-      });
+      return res.status(404).json({ error: 'Resource not found' });
     }
 
-    // Handle /api/admin/retailers
-    if (pathParts[0] === 'retailers') {
-      if (req.method === 'GET') {
-        const retailers = await VercelDb.getRetailers();
-        return res.status(200).json(retailers);
-      }
-
-      if (req.method === 'PUT' && pathParts[1]) {
-        // Update retailer status/tier: /api/admin/retailers/[id]
-        const retailerId = pathParts[1];
-        const { status, tier } = req.body;
-        
-        const retailers = await VercelDb.getRetailers();
-        const retailer = retailers.find(r => r.id === retailerId);
-        
-        if (!retailer) {
-          return res.status(404).json({ error: 'Retailer not found' });
+    if (req.method === 'PUT' || req.method === 'PATCH') {
+      if (resource === 'retailers' && id) {
+        const body = req.body;
+        // Basic validation
+        if (!body.status || !['Approved', 'Declined', 'Pending'].includes(body.status)) {
+           return res.status(400).json({ error: 'Invalid status' });
         }
-
-        if (status) retailer.status = status;
-        if (tier) retailer.tier = tier;
-        retailer.updatedAt = new Date().toISOString();
         
-        await VercelDb.saveRetailer(retailer);
-        return res.status(200).json(retailer);
-      }
+        const retailers = await VercelDb.getRetailers();
+        const retailer = retailers.find(r => r.id === id);
+        if (!retailer) return res.status(404).json({ error: 'Retailer not found' });
 
-      return res.status(405).json({ error: 'Method not allowed' });
+        const updatedRetailer = { ...retailer, status: body.status as any, updatedAt: new Date().toISOString() };
+        await VercelDb.saveRetailer(updatedRetailer);
+        return res.status(200).json(updatedRetailer);
+      }
+      return res.status(404).json({ error: 'Method not allowed for this resource' });
     }
 
-    // Handle /api/admin/orders
-    if (pathParts[0] === 'orders') {
-      if (req.method === 'GET') {
-        const orders = await VercelDb.getOrders();
-        
-        // Enrich with retailer info
-        const retailers = await VercelDb.getRetailers();
-        const enriched = orders.map(order => {
-          const retailer = retailers.find(r => r.id === order.retailerId);
-          return {
-            ...order,
-            retailerName: retailer?.companyName || 'Unknown',
-            retailerTier: retailer?.tier || 'Standard'
-          };
-        });
-        
-        return res.status(200).json(enriched);
-      }
+    return res.status(405).json({ error: 'Method Not Allowed' });
 
-      if (req.method === 'PUT' && pathParts[1]) {
-        // Update order status: /api/admin/orders/[id]
-        const orderId = pathParts[1];
-        const { status } = req.body;
-        
-        const orders = await VercelDb.getOrders();
-        const order = orders.find(o => o.id === orderId);
-        
-        if (!order) {
-          return res.status(404).json({ error: 'Order not found' });
-        }
-
-        if (status) {
-          order.status = status;
-          order.updatedAt = new Date().toISOString();
-          await VercelDb.saveOrder(order);
-        }
-        
-        return res.status(200).json(order);
-      }
-
-      return res.status(405).json({ error: 'Method not allowed' });
-    }
-
-    return res.status(404).json({ error: 'Unknown admin endpoint' });
-
-  } catch (error) {
-    console.error('Admin API error:', error);
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    });
+  } catch (error: any) {
+    console.error('Admin API Error:', error);
+    return res.status(500).json({ error: error.message || 'Internal Server Error' });
   }
 }
