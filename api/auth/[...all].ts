@@ -1,18 +1,23 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { sign, verify } from 'jsonwebtoken';
 import { VercelDb } from '../../src/db/dbStore';
+import { signJWT, verifyJWT } from '../../src/lib/jwt';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 
 // Initialize DB tables on cold start
 VercelDb.ensureTables().catch(console.error);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-change-me';
-
-// Schema for login validation
+// Validation schemas
 const loginSchema = z.object({
   email: z.string().email(),
+  password: z.string().min(1)
+});
+
+const registerSchema = z.object({
+  email: z.string().email(),
   password: z.string().min(6),
+  fullName: z.string().min(1),
+  phone: z.string().min(1)
 });
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -26,23 +31,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Determine action based on path or method
-    // Path: /api/auth/login -> segments: ['login']
-    const pathSegments = (req.url || '').replace(/^\/api\/auth\//, '').split('/').filter(Boolean);
-    const action = pathSegments[0] || 'login'; 
-
-    if (req.method === 'POST' && action === 'login') {
+    // Determine action from URL path
+    const urlPath = req.url || '';
+    const cleanPath = urlPath.replace(/^\//, '').split('?')[0];
+    
+    // --- LOGIN ---
+    if (req.method === 'POST' && cleanPath === 'login') {
       const body = req.body;
-      
-      // Validate input
       const validation = loginSchema.safeParse(body);
+      
       if (!validation.success) {
-        return res.status(400).json({ error: 'Invalid email or password format' });
+        return res.status(400).json({ error: 'Invalid input', details: validation.error.errors });
       }
 
       const { email, password } = validation.data;
-
-      // Fetch users from DB
       const users = await VercelDb.getUsers();
       const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
 
@@ -50,23 +52,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
-      // Verify password
       const isMatch = await bcrypt.compare(password, user.passwordHash);
       if (!isMatch) {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
-      // Generate Token
-      // Fix: Explicitly define payload to satisfy TS
-      const tokenPayload = {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        fullName: user.fullName
-      };
-
-      const token = sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
-
+      const token = await signJWT({ id: user.id, email: user.email, role: user.role });
+      
       return res.status(200).json({
         token,
         user: {
@@ -78,24 +70,124 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    if (req.method === 'POST' && action === 'register') {
-       // Placeholder for register logic if needed in this file
-       return res.status(501).json({ error: 'Registration handled separately or not implemented in this block' });
+    // --- REGISTER ---
+    if (req.method === 'POST' && cleanPath === 'register') {
+      const body = req.body;
+      const validation = registerSchema.safeParse(body);
+      
+      if (!validation.success) {
+        return res.status(400).json({ error: 'Invalid input', details: validation.error.errors });
+      }
+
+      const { email, password, fullName, phone } = validation.data;
+      const users = await VercelDb.getUsers();
+      
+      if (users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+
+      const salt = await bcrypt.genSalt(12);
+      const passwordHash = await bcrypt.hash(password, salt);
+      const userId = `user-${Date.now()}`;
+
+      const newUser = {
+        id: userId,
+        email,
+        passwordHash,
+        fullName,
+        phone,
+        role: 'retailer' as const,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        isAnonymized: false
+      };
+
+      await VercelDb.saveUser(newUser);
+      const token = await signJWT({ id: userId, email, role: 'retailer' });
+
+      return res.status(201).json({
+        token,
+        user: {
+          id: userId,
+          email,
+          fullName,
+          role: 'retailer'
+        }
+      });
     }
 
-    if (req.method === 'GET' && action === 'me') {
-      // Basic auth check for /me
+    // --- GET CURRENT USER ---
+    if (req.method === 'GET' && cleanPath === 'me') {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
+
       const token = authHeader.split(' ')[1];
+      let payload;
       try {
-        const decoded = verify(token, JWT_SECRET) as any;
-        return res.status(200).json({ user: decoded });
+        payload = await verifyJWT(token);
       } catch (e) {
         return res.status(401).json({ error: 'Invalid token' });
       }
+
+      const users = await VercelDb.getUsers();
+      const user = users.find(u => u.id === (payload as any).id);
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      return res.status(200).json({
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        createdAt: user.createdAt
+      });
+    }
+
+    // --- GET MY DATA (PDPA) ---
+    if (req.method === 'GET' && cleanPath === 'my-data') {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const token = authHeader.split(' ')[1];
+      let payload;
+      try {
+        payload = await verifyJWT(token);
+      } catch (e) {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+
+      const userId = (payload as any).id;
+      const users = await VercelDb.getUsers();
+      const user = users.find(u => u.id === userId);
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const retailers = await VercelDb.getRetailers();
+      const retailer = retailers.find(r => r.userId === userId);
+      
+      const orders = await VercelDb.getOrders();
+      const userOrders = orders.filter(o => o.userId === userId);
+
+      return res.status(200).json({
+        user: {
+          id: user.id,
+          email: user.email,
+          fullName: user.fullName,
+          phone: user.phone,
+          role: user.role,
+          createdAt: user.createdAt
+        },
+        retailer: retailer || null,
+        orders: userOrders
+      });
     }
 
     return res.status(404).json({ error: 'Endpoint not found' });
