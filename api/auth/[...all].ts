@@ -3,7 +3,7 @@ import { sql } from '@vercel/postgres';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
-// --- INLINE DATABASE HELPERS (No external imports needed) ---
+// --- INLINE DATABASE HELPERS ---
 
 async function ensureTables() {
   try {
@@ -72,13 +72,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Ensure DB exists before any operation
+    // Ensure DB exists
     await ensureTables();
 
-    const urlPath = req.url || '';
-    const cleanPath = urlPath.replace(/^\//, '').split('?')[0];
+    // ROBUST PATH PARSING
+    // 1. Get raw URL (e.g., "/login?test=1" or "/")
+    const rawUrl = req.url || '/';
+    
+    // 2. Remove query parameters (everything after '?')
+    const pathWithoutQuery = rawUrl.split('?')[0];
+    
+    // 3. Remove leading/trailing slashes and normalize
+    const cleanPath = pathWithoutQuery.replace(/^\/|\/$/g, '');
+
+    // Debug log (check Vercel logs to see what path is detected)
+    console.log(`Detected Path: "${cleanPath}" from raw URL: "${rawUrl}"`);
 
     // HANDLE LOGIN
+    // Matches: "login", "" (root), or sometimes "auth/login" depending on routing
     if (req.method === 'POST' && (cleanPath === 'login' || cleanPath === '')) {
       const { email, password } = req.body;
 
@@ -177,7 +188,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(401).json({ error: 'Invalid token' });
       }
 
-      // Fetch fresh user data
       const resData = await sql`SELECT * FROM users WHERE id = ${payload.id}`;
       const user = resData.rows[0];
 
@@ -193,7 +203,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    return res.status(404).json({ error: 'Endpoint not found' });
+    // If no route matched
+    console.log(`No route matched for method: ${req.method}, path: ${cleanPath}`);
+    return res.status(404).json({ 
+      error: 'Endpoint not found', 
+      debug: { method: req.method, path: cleanPath, available: ['POST /login', 'POST /register', 'GET /me'] }
+    });
 
   } catch (error: any) {
     console.error('Auth API Crash:', error);
