@@ -1,7 +1,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { verifyJWT } from '../../src/lib/jwt';
 import { VercelDb } from '../../src/db/dbStore';
 import { z } from 'zod';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+
+// Ensure DB tables exist (non-blocking)
+VercelDb.ensureTables().catch(console.error);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS Headers
@@ -14,40 +18,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Initialize DB tables safely
-    await VercelDb.ensureTables().catch((err) => {
-      console.error('DB Initialization Warning:', err);
-    });
-
+    // Determine action from URL path
+    // Vercel strips /api/auth/ so url might be just ?action=login or empty
     const urlPath = req.url || '';
     const cleanPath = urlPath.replace(/^\//, '').split('?')[0];
-    const parts = cleanPath.split('/');
     
-    // Handle /api/auth/login
-    if (req.method === 'POST' && parts[0] === 'login') {
-      const loginSchema = z.object({
-        email: z.string().email(),
-        password: z.string().min(1)
-      });
+    // Handle Login
+    if (req.method === 'POST' && (cleanPath === 'login' || cleanPath === '')) {
+      const { email, password } = req.body;
 
-      let body;
-      try {
-        body = req.body;
-        if (!body) throw new Error('Missing request body');
-        loginSchema.parse(body);
-      } catch (err: any) {
-        if (err instanceof z.ZodError) {
-          return res.status(400).json({ 
-            error: 'Invalid input', 
-            details: err.issues.map(i => i.message) 
-          });
-        }
-        return res.status(400).json({ error: 'Invalid request body' });
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password are required' });
       }
 
-      const { email, password } = body;
-
-      // Fetch users
+      // Initialize DB explicitly before query
+      await VercelDb.ensureTables();
       const users = await VercelDb.getUsers();
       const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
 
@@ -55,23 +40,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
-      // Check password
-      const bcrypt = await import('bcryptjs');
-      const isValid = await bcrypt.compare(password, user.passwordHash);
+      if (user.isAnonymized) {
+        return res.status(403).json({ error: 'Account has been anonymized' });
+      }
 
+      const isValid = await bcrypt.compare(password, user.passwordHash);
       if (!isValid) {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
-      // Generate JWT
-      const jwt = await import('jsonwebtoken');
       const token = jwt.sign(
-        { 
-          id: user.id, 
-          email: user.email, 
-          role: user.role 
-        },
-        process.env.JWT_SECRET || 'fallback-secret-key',
+        { id: user.id, email: user.email, role: user.role },
+        process.env.JWT_SECRET || 'fallback-secret',
         { expiresIn: '24h' }
       );
 
@@ -86,49 +66,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Handle /api/auth/register
-    if (req.method === 'POST' && parts[0] === 'register') {
-      const registerSchema = z.object({
-        email: z.string().email(),
-        password: z.string().min(6),
-        fullName: z.string().min(1),
-        phone: z.string().min(1)
-      });
-
-      let body;
-      try {
-        body = req.body;
-        if (!body) throw new Error('Missing request body');
-        registerSchema.parse(body);
-      } catch (err: any) {
-        if (err instanceof z.ZodError) {
-          return res.status(400).json({ 
-            error: 'Invalid input', 
-            details: err.issues.map(i => i.message) 
-          });
-        }
-        return res.status(400).json({ error: 'Invalid request body' });
+    // Handle Register
+    if (req.method === 'POST' && cleanPath === 'register') {
+      const { email, password, fullName, phone } = req.body;
+      
+      if (!email || !password || !fullName) {
+        return res.status(400).json({ error: 'Missing required fields' });
       }
 
-      const { email, password, fullName, phone } = body;
-
+      await VercelDb.ensureTables();
       const users = await VercelDb.getUsers();
-      const existingUser = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-
-      if (existingUser) {
+      
+      if (users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
         return res.status(409).json({ error: 'Email already registered' });
       }
 
-      const bcrypt = await import('bcryptjs');
       const salt = await bcrypt.genSalt(12);
       const passwordHash = await bcrypt.hash(password, salt);
+      const userId = `user-${Date.now()}`;
 
       const newUser = {
-        id: `user-${Date.now()}`,
+        id: userId,
         email,
         passwordHash,
         fullName,
-        phone,
+        phone: phone || '',
         role: 'retailer' as const,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -137,14 +99,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       await VercelDb.saveUser(newUser);
 
-      const jwt = await import('jsonwebtoken');
       const token = jwt.sign(
-        { 
-          id: newUser.id, 
-          email: newUser.email, 
-          role: newUser.role 
-        },
-        process.env.JWT_SECRET || 'fallback-secret-key',
+        { id: newUser.id, email: newUser.email, role: newUser.role },
+        process.env.JWT_SECRET || 'fallback-secret',
         { expiresIn: '24h' }
       );
 
@@ -159,22 +116,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Handle /api/auth/me (GET current user)
-    if (req.method === 'GET' && parts[0] === 'me') {
+    // Handle Get Me (Protected)
+    if (req.method === 'GET' && (cleanPath === 'me' || cleanPath === '')) {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
       const token = authHeader.split(' ')[1];
-      
       let payload: any;
       try {
-        payload = await verifyJWT(token);
+        payload = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
       } catch (e) {
         return res.status(401).json({ error: 'Invalid token' });
       }
 
+      await VercelDb.ensureTables();
       const users = await VercelDb.getUsers();
       const user = users.find(u => u.id === payload.id);
 
@@ -186,8 +143,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         id: user.id,
         email: user.email,
         fullName: user.fullName,
-        role: user.role,
-        createdAt: user.createdAt
+        role: user.role
       });
     }
 
@@ -196,8 +152,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (error: any) {
     console.error('Auth API Error:', error);
     return res.status(500).json({ 
-      error: 'Internal Server Error',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: 'Internal Server Error', 
+      details: error.message 
     });
   }
 }
